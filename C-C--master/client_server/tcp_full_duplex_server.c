@@ -25,15 +25,18 @@
 #include <Ws2tcpip.h>
 #include <io.h>
 #include <windows.h>
-#include <winsock2.h> 
+#include <winsock2.h>
 #include "fork.h"
 #define sleep(a) Sleep(a * 1000)
 #else
 #include <arpa/inet.h>  /// For the type in_addr_t and in_port_t
+#include <errno.h>
 #include <netdb.h>  /// For structures returned by the network database library - formatted internet addresses and port numbers
 #include <netinet/in.h>  /// For in_addr and sockaddr_in structures
+#include <signal.h>
 #include <sys/socket.h>  /// For macro definitions related to the creation of sockets
 #include <sys/types.h>  /// For definitions to allow for the porting of BSD programs
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 #include <stdint.h>  /// For specific bit size values of variables
@@ -42,6 +45,18 @@
 #include <string.h>  /// Various functions for manipulating arrays of characters
 
 #define PORT 10000  /// Define port over which communication will take place
+#define MAX_CONNECTIONS 5
+#define MAX_MESSAGES 1024
+
+#ifndef _WIN32
+static void reap_children(int sig)
+{
+    (void)sig;
+    while (waitpid(-1, NULL, WNOHANG) > 0)
+    {
+    }
+}
+#endif
 
 /**
  * @brief Utility function used to print an error message to `stderr`.
@@ -73,6 +88,12 @@ int main()
                       /// deal with internet addresses. Structures for handling
                       /// internet addresses
     socklen_t ClientLen;  /// size of address
+    int messages_processed = 0;
+
+#ifndef _WIN32
+    signal(SIGCHLD, reap_children);
+    signal(SIGPIPE, SIG_IGN);
+#endif
 
     /**
      * The TCP socket is created using the socket function
@@ -139,7 +160,7 @@ int main()
      *
      * It listens to connections through the socket descriptor
      */
-    listen(sockfd, 5);
+    listen(sockfd, MAX_CONNECTIONS);
 
     printf("Server is listening...\n");
 
@@ -148,6 +169,10 @@ int main()
      * accepted and established through the socket descriptor
      */
     conn = accept(sockfd, (struct sockaddr *)NULL, NULL);
+    if ((int)conn < 0)
+    {
+        error();
+    }
 
     printf("Server is connected...\n");
 
@@ -186,30 +211,48 @@ int main()
 
     if (pid == 0)  /// Value of 0 is for child process
     {
-        while (1)
+        while (messages_processed < MAX_MESSAGES)
         {
             bzero(&recvbuff, sizeof(recvbuff));
-            recv(conn, recvbuff, sizeof(recvbuff), 0);
+            if (recv(conn, recvbuff, sizeof(recvbuff) - 1, 0) <= 0)
+            {
+                break;
+            }
+            recvbuff[sizeof(recvbuff) - 1] = '\0';
             printf("\nCLIENT : %s\n", recvbuff);
+            messages_processed++;
             sleep(5);
             // break;
         }
+        close(conn);
+        _exit(0);
     }
-    else  /// Parent process
+    else if (pid > 0)  /// Parent process
     {
-        while (1)
+        while (messages_processed < MAX_MESSAGES)
         {
             bzero(&sendbuff, sizeof(sendbuff));
             printf("\nType message here: ");
-            fgets(sendbuff, 1024, stdin);
-            send(conn, sendbuff, strlen(sendbuff) + 1, 0);
+            if (fgets(sendbuff, MAX_MESSAGES, stdin) == NULL)
+            {
+                break;
+            }
+            if (send(conn, sendbuff, strlen(sendbuff) + 1, 0) < 0)
+            {
+                break;
+            }
             printf("\nMessage Sent!\n");
+            messages_processed++;
             sleep(5);
             // break;
         }
+#ifndef _WIN32
+        waitpid(pid, NULL, 0);
+#endif
     }
 
     /// Close socket
+    close(conn);
     close(sockfd);
     printf("Server is offline...\n");
     return 0;

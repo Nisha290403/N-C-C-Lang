@@ -211,6 +211,11 @@ void free_dbg(void* ptrToFree)
 	mem_info* toFree = NULL;
 	mem_info* previous = NULL;
 
+	if (!tmp)
+	{
+		return;
+	}
+
 	// Check if the head contains the pointer to free
 	if (tmp->ptr == ptrToFree)
 	{
